@@ -1,0 +1,106 @@
+name: ubuntu-22.04-image
+
+# Reproducible build of the Caihong Ubuntu 22.04 installation set.
+#
+# The runner is x86_64, so the arm64 user space is built with debootstrap +
+# qemu-user-static (binfmt_misc). The kernel package is *not* stored in this
+# repository: it is downloaded from the reference release and verified against
+# the digest pinned in config/ubuntu.env before anything is built.
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_package_url:
+        description: "URL of linux-caihong-*.pkg.tar.zst (empty = latest reference release)"
+        required: false
+        default: ""
+  push:
+    paths:
+      - "config/**"
+      - "rootfs/ubuntu/**"
+      - "scripts/*ubuntu*"
+      - "scripts/prepare-caihong-kernel.sh"
+      - "scripts/build-image.sh"
+      - "scripts/verify-ubuntu-image.sh"
+      - "tools/bootimg_v2.py"
+      - ".github/workflows/ubuntu-image.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap qemu-user-static binfmt-support \
+            e2fsprogs android-sdk-libsparse-utils libarchive-tools \
+            zstd python3 kmod device-tree-compiler git curl ca-certificates
+
+      - name: Enable aarch64 binfmt
+        run: |
+          sudo update-binfmts --enable qemu-aarch64 || true
+          ls /proc/sys/fs/binfmt_misc/ | grep -i aarch64
+
+      - name: Fetch the pinned Caihong kernel package
+        env:
+          INPUT_URL: ${{ inputs.kernel_package_url }}
+        run: |
+          set -euo pipefail
+          . config/ubuntu.env
+          mkdir -p release
+          if [ -n "${INPUT_URL:-}" ]; then
+            url=$INPUT_URL
+          else
+            url=$(curl -fsSL https://api.github.com/repos/osilvfe/caihong-linux-rootfs/releases/latest \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(a["browser_download_url"] for a in d["assets"] if a["name"].startswith("linux-caihong-") and a["name"].endswith(".pkg.tar.zst")))')
+          fi
+          echo "downloading $url"
+          curl -fL --retry 4 -o "release/$KERNEL_PACKAGE_NAME" "$url"
+          echo "$KERNEL_PACKAGE_SHA256  release/$KERNEL_PACKAGE_NAME" | sha256sum -c -
+
+      - name: Prepare kernel, device tree and modules
+        run: sudo scripts/prepare-caihong-kernel.sh
+
+      - name: Build the Ubuntu root filesystem
+        run: sudo env FORCE=1 scripts/build-ubuntu-rootfs.sh
+
+      - name: Package boot images and root filesystem images
+        run: |
+          sudo scripts/package-ubuntu-boot.sh
+          for label in linux userdata; do
+            sudo env ROOT_PARTLABEL=$label FORCE=1 \
+              scripts/build-ubuntu-image.sh build/rootfs \
+              "release/caihong-ubuntu22.04-rootfs-$label.ext4.sparse.img"
+          done
+
+      - name: Verify
+        run: |
+          sudo scripts/verify-ubuntu-image.sh \
+            --rootfs build/rootfs \
+            --boot release/caihong-ubuntu22.04-jammy-boot-linux.img \
+            --boot release/caihong-ubuntu22.04-jammy-boot-userdata.img \
+            --image release/caihong-ubuntu22.04-rootfs-linux.ext4.sparse.img.zst \
+            --image release/caihong-ubuntu22.04-rootfs-userdata.ext4.sparse.img.zst
+
+      - name: Record build provenance
+        run: |
+          {
+            echo "## Caihong Ubuntu 22.04 build"
+            cat build/kernel/manifest.env
+            echo
+            echo "### artifacts"
+            sha256sum release/*.img release/*.zst release/*.part-* 2>/dev/null || true
+          } > build-report.md
+          cat build-report.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caihong-ubuntu22.04
+          path: |
+            release/caihong-ubuntu22.04-*
+            build-report.md
+          retention-days: 14

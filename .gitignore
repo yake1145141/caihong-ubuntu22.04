@@ -1,0 +1,25 @@
+# build inputs and outputs
+/build/
+/release/
+/vendor/mesa/
+/downloads/
+/modules-current/
+/linux/
+/external/libcamera/
+/external/plasma-camera/
+/external/qbootctl/
+/external/mkbootimg/
+
+# runtime scratch
+/sim/
+
+# generated kernel data
+/build/kernel/
+
+# editor / OS noise
+*.swp
+*.tmp
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc

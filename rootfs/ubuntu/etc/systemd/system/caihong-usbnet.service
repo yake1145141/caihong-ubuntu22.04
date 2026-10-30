@@ -1,0 +1,28 @@
+[Unit]
+Description=Caihong USB-C RNDIS network gadget (keyboard-free debug channel)
+Documentation=file:/etc/caihong-rootfs-build-info
+After=sys-kernel-config.mount systemd-modules-load.service systemd-udevd.service local-fs.target
+Wants=sys-kernel-config.mount
+# The gadget creates usb0 and hands out DHCP leases; it must not race with
+# NetworkManager trying to manage that interface.
+Before=network-manager.service
+# No ConditionPathExists=/sys/class/udc here: the Qualcomm dwc3 controller can
+# register its UDC after this unit is first considered, and a failed condition
+# would skip the unit permanently (unit units never retry). The script waits for
+# the UDC and Restart=always covers a late controller.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/caihong-usbnet
+Restart=always
+RestartSec=3s
+# Binding a UDC and adding addresses needs CAP_NET_ADMIN/CAP_SYS_ADMIN; the DHCP
+# server additionally needs CAP_NET_RAW for its raw socket.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,86 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Print a compact hardware/status report on the internal panel console.
+#
+# A Caihong tablet has no serial console and may have no usable input device on a
+# fresh install, so the panel is often the *only* way to see what the system did.
+# This report is written just before the getty on tty1 so the reader sees it above
+# the login prompt, and it is mirrored into the kernel log as well.
+set -Eeuo pipefail
+CDPATH=
+
+out()
+{
+	printf '%s\n' "$*"
+	printf '<6>caihong-status: %s\n' "$*" > /dev/kmsg 2>/dev/null || true
+}
+
+read_first()
+{
+	[ -r "$1" ] || { printf 'n/a'; return 0; }
+	head -n 1 "$1" 2>/dev/null || printf 'n/a'
+}
+
+out "================================================================"
+out "Caihong Ubuntu $( . /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-?}" )  kernel $(uname -r)"
+[ -r /etc/caihong-rootfs-build-info ] && out "build: $(awk -F= '/^built_at=/{print $2}' /etc/caihong-rootfs-build-info)"
+
+# --- USB gadget / role state -------------------------------------------------
+udcs=$(ls /sys/class/udc 2>/dev/null | tr '\n' ' ')
+out "USB UDC      : ${udcs:-NONE}"
+roles=
+for r in /sys/class/usb_role/*/role; do
+	[ -r "$r" ] || continue
+	roles="$roles ${r%/role}=$(cat "$r" 2>/dev/null)"
+done
+out "USB role     : ${roles:-no usb_role switch}"
+gd=/sys/kernel/config/usb_gadget/caihong/UDC
+out "gadget bound : $(read_first "$gd")"
+
+# --- network -----------------------------------------------------------------
+ifaces=$(ip -br addr 2>/dev/null | awk '{ printf "%s=%s ", $1, $3 }')
+out "net          : ${ifaces:-none}"
+
+# --- display -----------------------------------------------------------------
+drm=
+for c in /sys/class/drm/card*/card*; do
+	[ -r "$c/status" ] || continue
+	drm="$drm ${c##*/}=$(cat "$c/status" 2>/dev/null)"
+done
+out "DRM          : $(ls /dev/dri 2>/dev/null | tr '\n' ' ')"
+out "connectors   : ${drm:-none}"
+bl=
+for b in /sys/class/backlight/*; do
+	[ -d "$b" ] || continue
+	bl="$bl ${b##*/}:$(read_first "$b/actual_brightness")/$(read_first "$b/max_brightness")"
+done
+out "backlight    : ${bl:-none}"
+
+# --- power -------------------------------------------------------------------
+if command -v caihong-battery >/dev/null 2>&1; then
+	bat=$(caihong-battery --raw 2>/dev/null | awk -F= '
+		$1=="type" { t=$2 } $1=="status" { s=$2 } $1=="capacity" { c=$2 }
+		$1=="voltage_now_uv" { v=$2 } $1=="temp_deci_c" { m=$2 }
+		END { printf "%s status=%s %s%% %smV %sC", t, s, c, v/1000, m/10 }')
+	out "battery      : ${bat:-unavailable}"
+else
+	out "battery      : helper missing"
+fi
+upower_state=$(cat /sys/class/power_supply/*/online 2>/dev/null | tr '\n' ' ')
+out "chargers     : ${upower_state:-none}"
+
+# --- last gadget errors (why the USB network channel is not up) --------------
+if systemctl is-failed --quiet caihong-usbnet.service 2>/dev/null; then
+	out "usbnet       : FAILED, last log lines:"
+	journalctl -u caihong-usbnet.service -n 3 --no-pager -o cat 2>/dev/null |
+		while IFS= read -r line; do out "  $line"; done
+else
+	out "usbnet       : $(systemctl is-active caihong-usbnet.service 2>/dev/null)"
+fi
+
+# --- storage / system --------------------------------------------------------
+out "root fs      : $(df -h / 2>/dev/null | awk 'NR==2 { print $2 " total, " $4 " free" }')"
+failed=$(systemctl --failed --no-legend --no-pager 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')
+out "failed units : ${failed:-none}"
+out "================================================================"

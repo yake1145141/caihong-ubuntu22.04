@@ -1,0 +1,18 @@
+[Unit]
+Description=Caihong boot status report on the panel console
+Documentation=file:/etc/caihong-rootfs-build-info
+After=local-fs.target caihong-usbnet.service systemd-modules-load.service
+# Print before the login prompt so the reader sees the report above it.
+Before=getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=tty
+TTYPath=/dev/tty1
+ExecStart=/usr/local/sbin/caihong-boot-status
+# A missing /dev/tty1 (no panel) must not mark the unit failed.
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

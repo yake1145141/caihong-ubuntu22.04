@@ -1,0 +1,26 @@
+[Unit]
+Description=Bounded automatic Caihong pen charging attempt
+After=bluetooth.service
+ConditionPathExists=/etc/caihong-pen.json
+# The reference unit uses the %v specifier (kernel release). systemd 249 in
+# Ubuntu 22.04 predates %v, so expand the release with a glob instead: the image
+# carries exactly one kernel release, and this form works on any systemd.
+ConditionPathExistsGlob=/lib/modules/*/kernel/drivers/power/supply/caihong_pen_power.ko*
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/caihong-pen-charge
+TimeoutStartSec=45
+TimeoutStopSec=25
+RuntimeDirectory=caihong-pen-charge
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/lock /run/caihong-pen-charge
+CapabilityBoundingSet=CAP_SYS_MODULE
+AmbientCapabilities=CAP_SYS_MODULE
+NoNewPrivileges=no
+ProtectKernelModules=no

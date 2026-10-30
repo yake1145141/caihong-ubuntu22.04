@@ -1,0 +1,68 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Supervise Ubuntu's adbd for the Caihong USB gadget.
+#
+# Ubuntu 22.04 ships android-tools-adbd (10.0.0+r36), which is linked against
+# Jammy's own glibc and needs no private library directory, unlike the Debian
+# adbd payload the reference Arch build has to carry. The supervision logic is
+# the reference one: adbd can stay alive after the FunctionFS worker died, which
+# leaves a device that enumerates but never accepts an adb connection.
+set -Eeuo pipefail
+CDPATH=
+
+adbd_binary=${ADBD_BINARY:-/usr/bin/adbd}
+adbd_pid=
+
+stop_adbd()
+{
+	if [[ -n ${adbd_pid:-} ]] && kill -0 "$adbd_pid" 2>/dev/null; then
+		kill "$adbd_pid"
+		wait "$adbd_pid" || true
+	fi
+}
+
+has_usb_worker()
+{
+	local task
+	for task in "/proc/$adbd_pid/task/"*/comm; do
+		[[ $(<"$task") == UsbFfs-worker ]] && return 0
+	done
+	return 1
+}
+
+has_configured_udc()
+{
+	local state
+	for state in /sys/class/udc/*/state; do
+		[[ -r $state ]] || continue
+		[[ $(<"$state") == configured ]] && return 0
+	done
+	return 1
+}
+
+[ -x "$adbd_binary" ] || {
+	echo "adbd is not available at $adbd_binary" >&2
+	exit 1
+}
+
+trap stop_adbd EXIT INT TERM
+"$adbd_binary" &
+adbd_pid=$!
+
+misses=0
+while kill -0 "$adbd_pid" 2>/dev/null; do
+	if has_usb_worker; then
+		misses=0
+	elif has_configured_udc; then
+		((++misses < 25)) || {
+			echo "adbd lost its FunctionFS USB worker" >&2
+			exit 1
+		}
+	else
+		misses=0
+	fi
+	sleep 0.2
+done
+
+wait "$adbd_pid"

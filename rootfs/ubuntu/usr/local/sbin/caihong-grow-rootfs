@@ -1,0 +1,64 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Grow the mounted Caihong root filesystem to the full size of its partition.
+#
+# The flashed image is built to a fixed logical size, while the partition the
+# installer created is larger. Resolving the block device from the live mount
+# keeps this unit independent of the partition label, so the same image works for
+# the dual-boot ("linux") and single-system ("userdata") layouts.
+set -Eeuo pipefail
+CDPATH=
+
+marker=/var/lib/caihong-rootfs-grown
+
+if [ -e "$marker" ]; then
+	echo "root filesystem already grown ($marker exists)"
+	exit 0
+fi
+
+source=$(findmnt -n -o SOURCE /)
+if [ -z "$source" ]; then
+	echo "cannot resolve the root block device" >&2
+	exit 1
+fi
+
+# findmnt may report a partition, a whole disk or a device-mapper node. resize2fs
+# handles every case where the device is a block device; refuse anything else
+# (overlayfs, tmpfs) instead of failing mysteriously later.
+case "$source" in
+	/dev/*) ;;
+	*)
+		echo "root device $source is not a block device; nothing to grow"
+		exit 0
+		;;
+esac
+
+if [ ! -b "$source" ]; then
+	echo "root device $source is not a block device; nothing to grow"
+	exit 0
+fi
+
+echo "growing $source to the end of its partition"
+before=$(dumpe2fs -h "$source" 2>/dev/null | awk -F: '/^Block count:/ { gsub(/ /, "", $2); print $2 }')
+resize2fs "$source"
+after=$(dumpe2fs -h "$source" 2>/dev/null | awk -F: '/^Block count:/ { gsub(/ /, "", $2); print $2 }')
+echo "block count: ${before:-unknown} -> ${after:-unknown}"
+
+# Only record success when the filesystem really covers the partition; a failed
+# resize must be retried on the next boot.
+part_blocks=$(blockdev --getsz "$source" 2>/dev/null || echo 0)
+block_size=$(dumpe2fs -h "$source" 2>/dev/null | awk -F: '/^Block size:/ { gsub(/ /, "", $2); print $2 }')
+if [ "${part_blocks:-0}" -gt 0 ] && [ -n "${block_size:-}" ]; then
+	fs_bytes=$(( after * block_size ))
+	part_bytes=$(( part_blocks * 512 ))
+	if [ "$fs_bytes" -gt "$part_bytes" ]; then
+		echo "filesystem ($fs_bytes) is larger than the partition ($part_bytes)" >&2
+		exit 1
+	fi
+	echo "filesystem $(( fs_bytes / 1024 / 1024 )) MiB of $(( part_bytes / 1024 / 1024 )) MiB partition"
+fi
+
+install -d -m 0755 "$(dirname "$marker")"
+: > "$marker"
+echo "root filesystem grown; $marker records it"

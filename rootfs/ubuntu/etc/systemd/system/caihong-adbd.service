@@ -1,0 +1,23 @@
+[Unit]
+Description=Caihong ADB device-mode daemon
+Documentation=file:/etc/caihong-rootfs-build-info
+After=sys-kernel-config.mount systemd-modules-load.service systemd-udevd.service local-fs.target
+Requires=sys-kernel-config.mount
+ConditionPathExistsGlob=/sys/class/udc/*
+ConditionPathExists=/usr/bin/adbd
+
+[Service]
+Type=notify
+NotifyAccess=all
+Environment=HOME=/root
+Environment=ADBD_USER=root
+ExecStartPre=+/usr/local/sbin/caihong-adbd-gadget setup
+ExecStart=/usr/local/sbin/caihong-adbd-run
+ExecStartPost=+/usr/local/sbin/caihong-adbd-gadget bind
+ExecStopPost=+/usr/local/sbin/caihong-adbd-gadget teardown
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target

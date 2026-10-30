@@ -1,0 +1,139 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Print the real battery and charger state of the OnePlus Pad Pro as reported by
+# the kernel power_supply class.
+#
+# This reads /sys/class/power_supply directly and never synthesises values: on
+# this device the numbers come from the PMIC battery manager
+# (CONFIG_BATTERY_QCOM_BATTMGR_CAIHONG) and the SC8547 charge pump
+# (sc8547_cp.ko). Missing attributes are reported as "n/a" rather than filled in.
+#
+# usage: caihong-battery [--raw]
+set -Eeuo pipefail
+CDPATH=
+
+raw=0
+case ${1:-} in
+	--raw) raw=1 ;;
+	-h|--help)
+		echo "usage: caihong-battery [--raw]"
+		echo "  --raw   print key=value lines for scripting"
+		exit 0
+		;;
+	'') ;;
+	*)
+		echo "usage: caihong-battery [--raw]" >&2
+		exit 2
+		;;
+esac
+
+sysfs=/sys/class/power_supply
+if [ ! -d "$sysfs" ]; then
+	echo "power_supply class is unavailable: is CONFIG_POWER_SUPPLY loaded?" >&2
+	exit 1
+fi
+
+read_attr()
+{
+	local path=$sysfs/$1/$2
+	[ -r "$path" ] || { printf 'n/a'; return 0; }
+	local value
+	value=$(head -n 1 "$path" 2>/dev/null) || { printf 'n/a'; return 0; }
+	printf '%s' "${value:-n/a}"
+}
+
+# microunits -> human units with three decimals, keeping "n/a" intact.
+scale()
+{
+	local value=$1 divisor=$2 unit=$3
+	if [ "$value" = n/a ] || ! [[ $value =~ ^-?[0-9]+$ ]]; then
+		printf 'n/a'
+		return 0
+	fi
+	awk -v v="$value" -v d="$divisor" -v u="$unit" \
+		'BEGIN { printf "%.3f%s", v / d, u }'
+}
+
+# Do not filter on the optional "scope" attribute: the Qualcomm battery manager
+# exposes qcom-battmgr-bat/-usb without one, and a scope=Device filter therefore
+# hid a perfectly working battery on real hardware. Only the explicit
+# scope=System duplicates (ucsi-source-psy-*) are skipped, because they repeat
+# the USB source that qcom-battmgr-usb already reports.
+supplies=()
+for entry in "$sysfs"/*; do
+	[ -d "$entry" ] || continue
+	name=${entry##*/}
+	[ "$(read_attr "$name" scope)" = System ] && continue
+	supplies+=("$name")
+done
+
+if [ ${#supplies[@]} -eq 0 ]; then
+	echo "no power supplies with scope=Device found in $sysfs" >&2
+	echo "the battery manager driver is probably not bound; check dmesg for qcom_battmgr" >&2
+	exit 1
+fi
+
+for name in "${supplies[@]}"; do
+	type=$(read_attr "$name" type)
+	online=$(read_attr "$name" online)
+	status=$(read_attr "$name" status)
+	capacity=$(read_attr "$name" capacity)
+	voltage=$(read_attr "$name" voltage_now)
+	current=$(read_attr "$name" current_now)
+	temp=$(read_attr "$name" temp)
+	health=$(read_attr "$name" health)
+	model=$(read_attr "$name" model_name)
+	cycles=$(read_attr "$name" cycle_count)
+
+	if [ "$raw" = 1 ]; then
+		printf 'supply=%s\n' "$name"
+		printf 'type=%s\n' "$type"
+		printf 'online=%s\n' "$online"
+		printf 'status=%s\n' "$status"
+		printf 'capacity=%s\n' "$capacity"
+		printf 'voltage_now_uv=%s\n' "$voltage"
+		printf 'current_now_ua=%s\n' "$current"
+		printf 'temp_deci_c=%s\n' "$temp"
+		printf 'health=%s\n' "$health"
+		printf 'model=%s\n' "$model"
+		printf 'cycle_count=%s\n' "$cycles"
+		continue
+	fi
+
+	printf '%s (%s)\n' "$name" "$type"
+	printf '  status      : %s\n' "$status"
+	printf '  online      : %s\n' "$online"
+	printf '  capacity    : %s%%\n' "$capacity"
+	printf '  voltage     : %s\n' "$(scale "$voltage" 1000000 V)"
+	printf '  current     : %s\n' "$(scale "$current" 1000000 A)"
+	if [ "$temp" != n/a ] && [[ $temp =~ ^-?[0-9]+$ ]]; then
+		printf '  temperature : %s C\n' "$(scale "$temp" 10 '')"
+	else
+		printf '  temperature : n/a\n'
+	fi
+	printf '  health      : %s\n' "$health"
+	[ "$model" = n/a ] || printf '  model       : %s\n' "$model"
+	[ "$cycles" = n/a ] || printf '  cycles      : %s\n' "$cycles"
+done
+
+if [ "$raw" = 0 ]; then
+	echo
+	echo "Charging controllers (USB-C / charge pump):"
+	found=0
+	for entry in "$sysfs"/*; do
+		[ -d "$entry" ] || continue
+		name=${entry##*/}
+		type=$(read_attr "$name" type)
+		case $type in
+			USB|USB_CDP|USB_DCP|USB_ACA|USB_HVDCP|USB_PD|USB_PD_DRP|Mains) ;;
+			*) continue ;;
+		esac
+		found=1
+		printf '  %-16s type=%-9s online=%-3s status=%-12s voltage=%s current_limit=%s\n' \
+			"$name" "$type" "$(read_attr "$name" online)" "$(read_attr "$name" status)" \
+			"$(scale "$(read_attr "$name" voltage_now)" 1000000 V)" \
+			"$(scale "$(read_attr "$name" current_max)" 1000000 A)"
+	done
+	[ "$found" = 1 ] || echo "  none reported"
+fi

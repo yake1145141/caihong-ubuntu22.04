@@ -1,0 +1,17 @@
+[Unit]
+Description=Grow the Caihong root filesystem to fill its partition
+Documentation=file:/etc/caihong-rootfs-build-info
+ConditionPathExists=!/var/lib/caihong-rootfs-grown
+After=local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/caihong-grow-rootfs
+# Growing an ext4 filesystem online is fast, but a slow UFS device can take a
+# moment on a nearly full partition; do not let systemd kill the resize.
+TimeoutStartSec=300s
+
+[Install]
+WantedBy=multi-user.target
