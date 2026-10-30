@@ -120,13 +120,24 @@ if [ -x "$dnsmasq" ]; then
 		--dhcp-range=192.168.55.10,192.168.55.50,255.255.255.0,12h \
 		--dhcp-option=3 --dhcp-option=6 \
 		--port=0 --no-resolv --no-hosts \
-		--pid-file=/run/caihong-usbnet.pid ||
-		log "dnsmasq exited; keeping the gadget up, use a static 192.168.55.2/24 on the host"
+		--pid-file=/run/caihong-usbnet.pid &
+	log "dnsmasq started on $netdev (static 192.168.55.2/24 on the host works too)"
 else
 	log "dnsmasq is missing; use a static 192.168.55.2/24 on the host"
 fi
 
-# Keep the unit alive and the gadget bound, whatever happened to the DHCP server.
+# Keep usb0 addressed. The Type-C role switch and host replugs tear the gadget
+# down and recreate usb0 without an address; observed on hardware as a link that
+# enumerates, answers for a minute and then stops responding. Re-applying the
+# address here is what keeps the debug channel usable across re-enumeration.
 while :; do
-	sleep 3600
+	if ip link show "$netdev" >/dev/null 2>&1; then
+		ip link set "$netdev" up 2>/dev/null || true
+		if ! ip -4 addr show "$netdev" 2>/dev/null | grep -q "inet $host_ip/24"; then
+			if ip addr add "$host_ip/24" dev "$netdev" 2>/dev/null; then
+				log "re-applied $host_ip/24 to $netdev after re-enumeration"
+			fi
+		fi
+	fi
+	sleep 3
 done
